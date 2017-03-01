@@ -22,7 +22,6 @@
 #include <string.h>
 #include <time.h>
 #include <sys/prctl.h>
-#include <dlfcn.h>
 
 #include <cutils/list.h>
 #include <cutils/log.h>
@@ -30,15 +29,6 @@
 #include <tinyalsa/asoundlib.h>
 #include <audio_effects/effect_visualizer.h>
 
-#define LIB_ACDB_LOADER "libacdbloader.so"
-#define ACDB_DEV_TYPE_OUT 1
-#define AFE_PROXY_ACDB_ID 45
-
-static void* acdb_handle;
-
-typedef void (*acdb_send_audio_cal_t)(int, int);
-
-acdb_send_audio_cal_t acdb_send_audio_cal;
 
 enum {
     EFFECT_STATE_UNINITIALIZED,
@@ -303,9 +293,6 @@ bool effects_enabled() {
 int configure_proxy_capture(struct mixer *mixer, int value) {
     const char *proxy_ctl_name = "AFE_PCM_RX Audio Mixer MultiMedia4";
     struct mixer_ctl *ctl;
-
-    if (value && acdb_send_audio_cal)
-        acdb_send_audio_cal(AFE_PROXY_ACDB_ID, ACDB_DEV_TYPE_OUT);
 
     ctl = mixer_get_ctl_by_name(mixer, proxy_ctl_name);
     if (ctl == NULL) {
@@ -627,19 +614,6 @@ int visualizer_init(effect_context_t *context)
 
     set_config(context, &context->config);
 
-    if (acdb_handle == NULL) {
-        acdb_handle = dlopen(LIB_ACDB_LOADER, RTLD_NOW);
-        if (acdb_handle == NULL) {
-            ALOGE("%s: DLOPEN failed for %s", __func__, LIB_ACDB_LOADER);
-        } else {
-            acdb_send_audio_cal = (acdb_send_audio_cal_t)dlsym(acdb_handle,
-                                                    "acdb_loader_send_audio_cal");
-            if (!acdb_send_audio_cal)
-                ALOGE("%s: Could not find the symbol acdb_send_audio_cal from %s",
-                      __func__, LIB_ACDB_LOADER);
-            }
-    }
-
     return 0;
 }
 
@@ -872,6 +846,14 @@ int visualizer_command(effect_context_t * context, uint32_t cmdCode, uint32_t cm
         break;
 
     case VISUALIZER_CMD_MEASURE: {
+        if (pReplyData == NULL || replySize == NULL ||
+                *replySize < (sizeof(int32_t) * MEASUREMENT_COUNT)) {
+            ALOGV("%s VISUALIZER_CMD_MEASURE error *replySize %d <"
+                    "(sizeof(int32_t) * MEASUREMENT_COUNT) %d",
+                    __func__, *replySize, sizeof(int32_t) * MEASUREMENT_COUNT);
+            android_errorWriteLog(0x534e4554, "30229821");
+            return -EINVAL;
+        }
         uint16_t peak_u16 = 0;
         float sum_rms_squared = 0.0f;
         uint8_t nb_valid_meas = 0;
